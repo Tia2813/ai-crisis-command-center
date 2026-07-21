@@ -1,159 +1,102 @@
 """
-AI-Crisis Command Center — Streamlit Dashboard
+AI-Crisis Command Center — Emergency Response Platform
 
-Takes a single unstructured incident report and runs it through a 5-agent
-CrewAI pipeline (Risk Analyst -> Logistics Lead -> Route Planner ->
-Triage Director -> Communications Officer), then renders the structured
-output as checklists, tables, and a public alert brief.
-
-Run with:
-    streamlit run app.py
+Entry point: handles auth gating, sidebar navigation, and page routing.
+Run with:  streamlit run app.py
 """
 
-import time
-import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from crew import run_pipeline
+from styles import inject_css
+from components import topbar, footer
+from auth import render_login
+from pages_ui import dashboard, new_incident, active_incidents, history, analytics, information, settings
 
 load_dotenv()
 
 st.set_page_config(
     page_title="AI-Crisis Command Center",
-    page_icon="🚨",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# ---------------------------------------------------------------------
-# Session state: cache the last result so Streamlit re-renders (widget
-# interactions, etc.) don't silently re-trigger paid API calls.
-# ---------------------------------------------------------------------
-if "plan" not in st.session_state:
-    st.session_state.plan = None
-if "last_report" not in st.session_state:
-    st.session_state.last_report = ""
+inject_css()
 
-st.title("🚨 AI-Crisis Command Center")
-st.caption(
-    "Multi-agent pipeline (CrewAI + Gemini) that turns a raw incident report "
-    "into a structured emergency response plan."
-)
+# ---------------------------------------------------------------------
+# Session state defaults
+# ---------------------------------------------------------------------
+defaults = {
+    "authenticated": False,
+    "user_email": "",
+    "current_page": "Dashboard",
+    "incidents": [],       # list of generated incident records
+    "notifications": [],   # list of {text, time}
+    "last_plan_id": None,
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ---------------------------------------------------------------------
+# Auth gate
+# ---------------------------------------------------------------------
+if not st.session_state.authenticated:
+    render_login()
+    st.stop()
+
+# ---------------------------------------------------------------------
+# Sidebar navigation
+# ---------------------------------------------------------------------
+NAV_ITEMS = [
+    "Dashboard",
+    "New Incident",
+    "Active Incidents",
+    "Incident History",
+    "Analytics",
+    "Information",
+    "Settings",
+]
 
 with st.sidebar:
-    st.header("About")
-    st.write(
-        "Five agents run in sequence, each handing structured context to the next:\n\n"
-        "1. **Risk Analyst**\n"
-        "2. **Logistics Lead**\n"
-        "3. **Route Planner**\n"
-        "4. **Triage Director**\n"
-        "5. **Communications Officer**"
-    )
-    st.divider()
-    st.caption("Set `GEMINI_API_KEY` in a `.env` file before running.")
-
-incident_report = st.text_area(
-    "Incident report (raw, unstructured field input)",
-    height=180,
-    placeholder=(
-        "e.g. Heavy rainfall since last night has flooded the low-lying areas "
-        "near Sector 12. Reports of 30+ families stranded on rooftops, one "
-        "collapsed bridge blocking the main access road, and a hospital "
-        "reporting rising water in its ground floor ward..."
-    ),
-    value=st.session_state.last_report,
-)
-
-run_clicked = st.button("Generate Response Plan", type="primary", use_container_width=True)
-
-if run_clicked:
-    if not incident_report.strip():
-        st.warning("Please enter an incident report before generating a plan.")
-    else:
-        st.session_state.last_report = incident_report
-        start = time.time()
-        with st.spinner("Running 5-agent pipeline..."):
-            try:
-                risk, resources, routes, triage, comms = run_pipeline(incident_report)
-                st.session_state.plan = {
-                    "risk": risk,
-                    "resources": resources,
-                    "routes": routes,
-                    "triage": triage,
-                    "comms": comms,
-                    "elapsed": round(time.time() - start, 1),
-                }
-            except Exception as e:
-                st.session_state.plan = None
-                st.error(f"Pipeline failed: {e}")
-
-plan = st.session_state.plan
-
-if plan:
-    st.success(f"Response plan generated in {plan['elapsed']}s")
-
-    tabs = st.tabs(
-        ["🧭 Risk Assessment", "📦 Resources", "🛣️ Routes", "🏥 Triage", "📢 Public Alert"]
+    st.markdown(
+        "<div style='padding: 4px 0 20px 0;'>"
+        "<span style='font-family:Poppins,sans-serif; font-weight:700; font-size:17px;'>Crisis Command</span>"
+        "</div>",
+        unsafe_allow_html=True,
     )
 
-    # --- Risk Assessment ---
-    with tabs[0]:
-        risk = plan["risk"]
-        col1, col2 = st.columns(2)
-        col1.metric("Incident Type", risk.incident_type)
-        col2.metric("Severity", risk.severity_level)
-        st.subheader("Affected Area")
-        st.write(risk.affected_area_summary)
-        st.subheader("Key Hazards")
-        for h in risk.key_hazards:
-            st.markdown(f"- {h}")
-        st.subheader("Immediate Priorities (Checklist)")
-        for p in risk.immediate_priorities:
-            st.checkbox(p, key=f"priority_{p}")
+    for label in NAV_ITEMS:
+        is_active = st.session_state.current_page == label
+        wrapper_class = "nav-btn-active" if is_active else "nav-btn"
+        st.markdown(f'<div class="{wrapper_class}">', unsafe_allow_html=True)
+        if st.button(label, key=f"nav_{label}", width="stretch"):
+            st.session_state.current_page = label
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    # --- Resources ---
-    with tabs[1]:
-        res = plan["resources"]
-        if res.resources:
-            df = pd.DataFrame([r.model_dump() for r in res.resources])
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        if res.notes:
-            st.caption(res.notes)
+    st.markdown("---")
+    st.markdown(
+        f"<div style='font-size:13px; color:var(--text-dim);'>{st.session_state.user_email}</div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Logout", width="stretch"):
+        st.session_state.authenticated = False
+        st.rerun()
 
-    # --- Routes ---
-    with tabs[2]:
-        routes = plan["routes"]
-        st.subheader("Evacuation Routes")
-        if routes.evacuation_routes:
-            df_evac = pd.DataFrame([r.model_dump() for r in routes.evacuation_routes])
-            st.dataframe(df_evac, use_container_width=True, hide_index=True)
-        st.subheader("Rescue Access Routes")
-        if routes.rescue_access_routes:
-            df_rescue = pd.DataFrame([r.model_dump() for r in routes.rescue_access_routes])
-            st.dataframe(df_rescue, use_container_width=True, hide_index=True)
+# ---------------------------------------------------------------------
+# Page routing
+# ---------------------------------------------------------------------
+PAGES = {
+    "Dashboard": dashboard,
+    "New Incident": new_incident,
+    "Active Incidents": active_incidents,
+    "Incident History": history,
+    "Analytics": analytics,
+    "Information": information,
+    "Settings": settings,
+}
 
-    # --- Triage ---
-    with tabs[3]:
-        triage = plan["triage"]
-        st.subheader("Triage Zones")
-        if triage.triage_zones:
-            df_triage = pd.DataFrame([z.model_dump() for z in triage.triage_zones])
-            st.dataframe(df_triage, use_container_width=True, hide_index=True)
-        st.subheader("Medical Supply Priorities")
-        for m in triage.medical_supply_priorities:
-            st.markdown(f"- {m}")
-
-    # --- Comms ---
-    with tabs[4]:
-        comms = plan["comms"]
-        st.subheader("Public Alert Message")
-        st.info(comms.public_alert_message)
-        st.subheader("Recommended Channels")
-        for c in comms.recommended_channels:
-            st.markdown(f"- {c}")
-        st.subheader("Key Do's and Don'ts")
-        for d in comms.key_dos_and_donts:
-            st.markdown(f"- {d}")
-else:
-    st.info("Enter an incident report above and click **Generate Response Plan** to begin.")
+topbar(st.session_state.user_email, st.session_state.current_page)
+PAGES[st.session_state.current_page].render()
+footer()
